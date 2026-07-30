@@ -164,6 +164,8 @@ static void Swz(Class c, SEL o, SEL n) {
 
 @interface CLLocationManager (_LH)
 - (void)_lh_setDelegate:(id)d;
+- (void)_lh_startUpdatingLocation;
+- (void)_lh_requestLocation;
 @end
 @implementation CLLocationManager (_LH)
 - (void)_lh_setDelegate:(id)d {
@@ -176,6 +178,29 @@ static void Swz(Class c, SEL o, SEL n) {
         return;
     }
     [self _lh_setDelegate:d];
+}
+- (void)_lh_startUpdatingLocation {
+    _LH_Config *c = [_LH_Config shared];
+    if (c.enabled) {
+        // 阻断真实定位 → 直接回调假位置
+        id delegate = [self valueForKey:@"delegate"];
+        if ([delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+            [delegate locationManager:self didUpdateLocations:@[MakeFake()]];
+        }
+        return;
+    }
+    [self _lh_startUpdatingLocation];
+}
+- (void)_lh_requestLocation {
+    _LH_Config *c = [_LH_Config shared];
+    if (c.enabled) {
+        id delegate = [self valueForKey:@"delegate"];
+        if ([delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+            [delegate locationManager:self didUpdateLocations:@[MakeFake()]];
+        }
+        return;
+    }
+    [self _lh_requestLocation];
 }
 @end
 
@@ -212,8 +237,10 @@ static void InstallAllHooks() {
         method_setImplementation(m4, (IMP)hook_init4);
     }
 
-    // B: 拦截 delegate
+    // B: 拦截 delegate + 阻断系统定位
     Swz([CLLocationManager class], @selector(setDelegate:), @selector(_lh_setDelegate:));
+    Swz([CLLocationManager class], @selector(startUpdatingLocation), @selector(_lh_startUpdatingLocation));
+    Swz([CLLocationManager class], @selector(requestLocation), @selector(_lh_requestLocation));
 
     // C: 拦截 coordinate getter
     Method mc = class_getInstanceMethod([CLLocation class], @selector(coordinate));
