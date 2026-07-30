@@ -4,6 +4,8 @@
 //
 
 #import "ConfigManager.h"
+#import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 
 @implementation LocationPreset
 + (instancetype)presetWithName:(NSString *)name latitude:(double)lat longitude:(double)lon {

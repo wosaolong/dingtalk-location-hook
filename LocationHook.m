@@ -11,6 +11,7 @@
 //
 
 #import <CoreLocation/CoreLocation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ConfigManager.h"
@@ -101,7 +102,11 @@
     if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
         [self.originalDelegate locationManager:manager didUpdateLocations:@[fakeLocation]];
     } else if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(locationManager:didUpdateToLocation:fromLocation:)]) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        #pragma clang diagnostic ignored "-Wnonnull"
         [self.originalDelegate locationManager:manager didUpdateToLocation:fakeLocation fromLocation:nil];
+        #pragma clang diagnostic pop
     }
 }
 
@@ -112,9 +117,15 @@
     }
 }
 
-- (void)locationManager:(CLLocationManager *)manager didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
-    if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(locationManager:didChangeAuthorizationStatus:)]) {
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
+    CLAuthorizationStatus status = [manager authorizationStatus];
+    if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(locationManagerDidChangeAuthorization:)]) {
+        [self.originalDelegate locationManagerDidChangeAuthorization:manager];
+    } else if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(locationManager:didChangeAuthorizationStatus:)]) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         [self.originalDelegate locationManager:manager didChangeAuthorizationStatus:status];
+        #pragma clang diagnostic pop
     }
 }
 
@@ -243,23 +254,15 @@ static void LocationHookInit() {
                 id menuMgr = [menuMgrClass shared];
                 SEL sel = NSSelectorFromString(@"delayedInit");
                 if ([menuMgr respondsToSelector:sel]) {
-                    [menuMgr performSelector:sel];
+                    ((void (*)(id, SEL))[menuMgr methodForSelector:sel])(menuMgr, sel);
                 }
             }
 
             // 启动剪贴板监听
             // 使用 NSNotificationCenter 注册应用激活通知
-            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                               object:nil
-                                                                queue:[NSOperationQueue mainQueue]
-                                                           usingBlock:^(NSNotification * _Nonnull note) {
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
                 // 每次应用激活时检查剪贴板
-                static dispatch_once_t oncePaste;
-                dispatch_once(&oncePaste, ^{
-                    // 首次激活不处理，避免启动时误触发
-                });
             }];
-
             NSLog(@"[LocationHook] UI 初始化已调度");
         });
 

@@ -9,6 +9,9 @@
 #import <UIKit/UIKit.h>
 #import "ConfigManager.h"
 
+// 兼容 iOS 13+，keyWindow 废弃但 iOS 15 仍可用
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 // ============================================================
 //  悬浮按钮视图
 // ============================================================
