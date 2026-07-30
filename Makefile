@@ -15,6 +15,7 @@ CFLAGS = -shared \
          -framework Foundation \
          -framework CoreLocation \
          -framework UIKit \
+         -framework QuartzCore \
          -fobjc-arc \
          -O2 \
          -DNDEBUG \
