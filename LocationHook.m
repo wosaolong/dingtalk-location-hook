@@ -31,22 +31,34 @@ static void Swz(Class c, SEL o, SEL n) {
 @interface CLLocationManager (_H)
 - (void)_h_startUpdatingLocation;
 - (void)_h_requestLocation;
+- (CLLocation *)_h_location;
 @end
 @implementation CLLocationManager (_H)
-- (void)_h_startUpdatingLocation {
-    id del = [self valueForKey:@"delegate"];
-    CLLocation *fake = [[CLLocation alloc]
+
+// 生成假位置
+static CLLocation *FakeLoc() {
+    CLLocation *loc = [[CLLocation alloc]
         initWithCoordinate:CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON)
         altitude:50 horizontalAccuracy:65 verticalAccuracy:10
         course:0 speed:0.5 timestamp:[NSDate date]];
-    @try { [fake setValue:@NO forKey:@"isFromMockProvider"]; } @catch(id e){}
-    @try { [fake setValue:@NO forKey:@"isSimulatedBySoftware"]; } @catch(id e){}
+    @try { [loc setValue:@NO forKey:@"isFromMockProvider"]; } @catch(id e){}
+    @try { [loc setValue:@NO forKey:@"isSimulatedBySoftware"]; } @catch(id e){}
+    return loc;
+}
+
+- (void)_h_startUpdatingLocation {
+    id del = [self valueForKey:@"delegate"];
     if ([del respondsToSelector:@selector(locationManager:didUpdateLocations:)])
-        [del locationManager:self didUpdateLocations:@[fake]];
+        [del locationManager:self didUpdateLocations:@[FakeLoc()]];
 }
 - (void)_h_requestLocation {
     [self _h_startUpdatingLocation];
 }
+- (CLLocation *)_h_location {
+    // 覆盖 location 属性，直接返回假位置
+    return FakeLoc();
+}
+
 @end
 
 // ===== +load 入口（TrollFools 兼容） =====
@@ -61,9 +73,10 @@ static void Swz(Class c, SEL o, SEL n) {
         method_setImplementation(m, (IMP)hook_coord);
     }
 
-    // 2. Hook 定位启停
+    // 2. Hook 定位启停 + location 属性
     Swz([CLLocationManager class], @selector(startUpdatingLocation), @selector(_h_startUpdatingLocation));
     Swz([CLLocationManager class], @selector(requestLocation), @selector(_h_requestLocation));
+    Swz([CLLocationManager class], @selector(location), @selector(_h_location));
 
     // 3. 显示 UI 按钮
     dispatch_async(dispatch_get_main_queue(), ^{
