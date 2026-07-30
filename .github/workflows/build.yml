@@ -1,0 +1,56 @@
+# GitHub Actions 工作流 — 自动编译 LocationHook.dylib
+# 把代码 push 到 GitHub 自动编译，无需 Mac
+
+name: Build LocationHook.dylib
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔧 检查 Xcode 环境
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: 📦 编译 dylib
+        run: |
+          clang -shared \
+                -arch arm64 \
+                -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+                -framework Foundation \
+                -framework CoreLocation \
+                -framework UIKit \
+                -framework UserNotifications \
+                -fobjc-arc -O2 -dynamiclib \
+                -miphoneos-version-min=14.0 \
+                -o LocationHook.dylib \
+                LocationHook.m ConfigManager.m FloatingMenu.m
+
+      - name: ✅ 验证编译结果
+        run: |
+          echo "=== 文件信息 ==="
+          file LocationHook.dylib
+          echo ""
+          echo "=== 符号表 ==="
+          nm -gU LocationHook.dylib | head -20
+
+      - name: 📤 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocationHook.dylib
+          path: LocationHook.dylib
+          if-no-files-found: error
+
+      - name: ✅ 编译完成
+        run: echo "🎉 编译成功！在 Actions 页面下载 LocationHook.dylib"
