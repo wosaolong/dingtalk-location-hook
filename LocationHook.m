@@ -1,7 +1,6 @@
 //
-//  LocationHook.m — 最终版
-//  核心策略：hook init + 全路径覆盖，不依赖注入时机
-//  坐标 31.273598, 121.463739（上海）
+//  LocationHook.m — TrollFools 最终版
+//  坐标硬编码 31.273598,121.463739 + 开关功能 + 区域监控拦截
 //
 
 #import <CoreLocation/CoreLocation.h>
@@ -11,7 +10,16 @@
 #define TARGET_LAT 31.273598
 #define TARGET_LON 121.463739
 
-// ===== 假位置生成 =====
+// 开关 — 存储在 NSUserDefaults
+static BOOL IsEnabled() {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"_FE"];
+}
+static void SetEnabled(BOOL v) {
+    [[NSUserDefaults standardUserDefaults] setBool:v forKey:@"_FE"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// ===== 假位置 =====
 static CLLocation *FakeLoc() {
     CLLocation *loc = [[CLLocation alloc]
         initWithCoordinate:CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON)
@@ -22,133 +30,151 @@ static CLLocation *FakeLoc() {
     return loc;
 }
 
-// ===== Swizzle 工具 =====
+// ===== Swizzle =====
 static void Swz(Class c, SEL o, SEL n) {
     Method om = class_getInstanceMethod(c, o);
     Method nm = class_getInstanceMethod(c, n);
     if (om && nm) method_exchangeImplementations(om, nm);
 }
-static void SetImp(Class c, SEL sel, IMP imp, IMP *orig) {
-    Method m = class_getInstanceMethod(c, sel);
-    if (m) { if(orig) *orig = method_getImplementation(m); method_setImplementation(m, imp); }
-}
 
-// ===== CLLocationManager 全面拦截 =====
-
-@interface CLLocationManager (_F)
-- (instancetype)_f_init;
-- (void)_f_setDelegate:(id)d;
-- (void)_f_startUpdatingLocation;
-- (void)_f_requestLocation;
-- (CLLocation *)_f_location;
-@end
-
-@implementation CLLocationManager (_F)
-
-- (instancetype)_f_init {
-    CLLocationManager *m = [self _f_init];
-    // 确保任何已创建的实例的 delegate 被我们包裹
-    // 注意：此时 delegate 可能已经设置了，但我们无法在这里修复
-    // 需要依赖 setDelegate: hook 来捕获
-    return m;
-}
-
-static void SetupProxyClass(Class proxyClass) {
+// ===== 动态代理 =====
+static void SetupProxy(Class cls) {
     // locationManager:didUpdateLocations:
-    class_addMethod(proxyClass, @selector(locationManager:didUpdateLocations:),
-        imp_implementationWithBlock(^(id _self, CLLocationManager *mgr, NSArray *locs) {
-            id origDel = objc_getAssociatedObject(_self, "origDel");
-            if (origDel && [origDel respondsToSelector:@selector(locationManager:didUpdateLocations:)])
-                [origDel locationManager:mgr didUpdateLocations:@[FakeLoc()]];
+    class_addMethod(cls, @selector(locationManager:didUpdateLocations:),
+        imp_implementationWithBlock(^(id _self, CLLocationManager *m, NSArray *l) {
+            id od = objc_getAssociatedObject(_self, "od");
+            if (!od || ![od respondsToSelector:@selector(locationManager:didUpdateLocations:)]) return;
+            [od locationManager:m didUpdateLocations:IsEnabled() ? @[FakeLoc()] : l];
         }), "v@:@@");
 
-    // respondsToSelector:
-    class_addMethod(proxyClass, @selector(respondsToSelector:),
-        imp_implementationWithBlock(^BOOL(id _self, SEL sel) {
-            id origDel = objc_getAssociatedObject(_self, "origDel");
-            return [origDel respondsToSelector:sel];
-        }), "B@::");
+    // locationManager:didDetermineState:forRegion: — 始终返回在区域内
+    class_addMethod(cls, @selector(locationManager:didDetermineState:forRegion:),
+        imp_implementationWithBlock(^(id _self, CLLocationManager *m, NSInteger st, id r) {
+            id od = objc_getAssociatedObject(_self, "od");
+            if (!od || ![od respondsToSelector:@selector(locationManager:didDetermineState:forRegion:)]) return;
+            [od locationManager:m didDetermineState:IsEnabled() ? CLRegionStateInside : st forRegion:r];
+        }), "v@:@q@");
+
+    // locationManager:didFailWithError:
+    class_addMethod(cls, @selector(locationManager:didFailWithError:),
+        imp_implementationWithBlock(^(id _self, CLLocationManager *m, NSError *e) {
+            id od = objc_getAssociatedObject(_self, "od");
+            if (od && [od respondsToSelector:@selector(locationManager:didFailWithError:)])
+                [od locationManager:m didFailWithError:e];
+        }), "v@:@@");
+
+    // locationManagerDidChangeAuthorization:
+    class_addMethod(cls, @selector(locationManagerDidChangeAuthorization:),
+        imp_implementationWithBlock(^(id _self, CLLocationManager *m) {
+            id od = objc_getAssociatedObject(_self, "od");
+            if (od && [od respondsToSelector:@selector(locationManagerDidChangeAuthorization:)])
+                [od locationManagerDidChangeAuthorization:m];
+        }), "v@:@");
 
     // forwardInvocation:
-    class_addMethod(proxyClass, @selector(forwardInvocation:),
+    class_addMethod(cls, @selector(forwardInvocation:),
         imp_implementationWithBlock(^(id _self, NSInvocation *inv) {
-            id origDel = objc_getAssociatedObject(_self, "origDel");
-            if (origDel && [origDel respondsToSelector:inv.selector])
-                [inv invokeWithTarget:origDel];
+            id od = objc_getAssociatedObject(_self, "od");
+            if (od && [od respondsToSelector:inv.selector]) [inv invokeWithTarget:od];
         }), "v@:@");
 
     // methodSignatureForSelector:
-    class_addMethod(proxyClass, @selector(methodSignatureForSelector:),
+    class_addMethod(cls, @selector(methodSignatureForSelector:),
         imp_implementationWithBlock(^NSMethodSignature *(id _self, SEL sel) {
-            id origDel = objc_getAssociatedObject(_self, "origDel");
-            return [origDel methodSignatureForSelector:sel];
+            return [objc_getAssociatedObject(_self, "od") methodSignatureForSelector:sel];
         }), "@@::");
+
+    // respondsToSelector:
+    class_addMethod(cls, @selector(respondsToSelector:),
+        imp_implementationWithBlock(^BOOL(id _self, SEL sel) {
+            return [objc_getAssociatedObject(_self, "od") respondsToSelector:sel];
+        }), "B@::");
 }
 
+// ===== CLLocationManager Hook =====
+@interface CLLocationManager (_F)
+- (instancetype)_f_init;
+- (void)_f_setDelegate:(id)d;
+- (CLLocation *)_f_location;
+@end
+@implementation CLLocationManager (_F)
+- (instancetype)_f_init {
+    return [self _f_init];
+}
 - (void)_f_setDelegate:(id)d {
-    static Class proxyClass = nil;
+    static Class pc = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        proxyClass = objc_allocateClassPair([NSObject class], "_F_Proxy", 0);
-        SetupProxyClass(proxyClass);
-        objc_registerClassPair(proxyClass);
+        pc = objc_allocateClassPair([NSObject class], "_F_P", 0);
+        SetupProxy(pc);
+        objc_registerClassPair(pc);
     });
-
-    if (d && ![d isKindOfClass:proxyClass]) {
-        id proxy = [[proxyClass alloc] init];
-        objc_setAssociatedObject(proxy, "origDel", d, OBJC_ASSOCIATION_ASSIGN);
-        // 强引用 proxy 到 manager，防止 delegate(weak) 释放后 proxy 被回收
-        objc_setAssociatedObject(self, "_px", proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [self _f_setDelegate:proxy];
+    if (d && ![d isKindOfClass:pc]) {
+        id p = [[pc alloc] init];
+        objc_setAssociatedObject(p, "od", d, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(self, "_pr", p, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self _f_setDelegate:p];
         return;
     }
     [self _f_setDelegate:d];
 }
-
-- (void)_f_startUpdatingLocation {
-    // 不阻断真实定位，让系统正常返回位置数据
-    // delegate proxy 和 coordinate hook 会负责篡改
-    [self _f_startUpdatingLocation];
+- (CLLocation *)_f_location {
+    return IsEnabled() ? FakeLoc() : [self _f_location];
 }
-- (void)_f_requestLocation {
-    [self _f_requestLocation];
-}
-- (CLLocation *)_f_location { return FakeLoc(); }
 @end
 
-// ===== 直接 hook CLLocation.coordinate =====
+// ===== coordinate hook =====
 static void InstallCoordHook() {
-    SetImp([CLLocation class], @selector(coordinate),
-           imp_implementationWithBlock(^CLLocationCoordinate2D(id self) {
-               return CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON);
-           }), NULL);
+    Method m = class_getInstanceMethod([CLLocation class], @selector(coordinate));
+    if (!m) return;
+    IMP orig = method_getImplementation(m);
+    method_setImplementation(m, imp_implementationWithBlock(^CLLocationCoordinate2D(id self) {
+        if (!IsEnabled()) return ((CLLocationCoordinate2D(*)(id,SEL))orig)(self, @selector(coordinate));
+        return CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON);
+    }));
 }
 
 // ===== +load 入口 =====
-@interface _F_Loader : NSObject @end
-@implementation _F_Loader
+@interface _F_L : NSObject @end
+@implementation _F_L
 + (void)load {
-    // 1. hook CLLocation.coordinate（最底层）
     InstallCoordHook();
-
-    // 2. hook CLLocationManager init + 所有定位方法
     Swz([CLLocationManager class], @selector(init), @selector(_f_init));
     Swz([CLLocationManager class], @selector(setDelegate:), @selector(_f_setDelegate:));
-    Swz([CLLocationManager class], @selector(startUpdatingLocation), @selector(_f_startUpdatingLocation));
-    Swz([CLLocationManager class], @selector(requestLocation), @selector(_f_requestLocation));
     Swz([CLLocationManager class], @selector(location), @selector(_f_location));
 
-    // 3. UI
     dispatch_async(dispatch_get_main_queue(), ^{
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
         CGFloat w = [UIScreen mainScreen].bounds.size.width;
         CGFloat h = [UIScreen mainScreen].bounds.size.height;
         b.frame = CGRectMake(w-65, h/2, 50, 50);
-        b.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.85];
+        b.backgroundColor = IsEnabled() ? [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.85] : [UIColor grayColor];
         b.layer.cornerRadius = 25;
         [b setTitle:@"📍" forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont systemFontOfSize:22];
+        [b addTarget:b action:@selector(_f_tap) forControlEvents:UIControlEventTouchUpInside];
         [[UIApplication sharedApplication].windows.firstObject addSubview:b];
     });
+}
+@end
+
+// ===== UI 菜单 =====
+@interface UIButton (_F) @end
+@implementation UIButton (_F)
+- (void)_f_tap {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"📍 虚拟定位"
+        message:[NSString stringWithFormat:@"坐标: %.4f,%.4f\n状态: %@", TARGET_LAT, TARGET_LON, IsEnabled()?@"✅ 开启":@"❌ 关闭"]
+        preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [a addAction:[UIAlertAction actionWithTitle:IsEnabled()?@"⏸ 暂停":@"▶️ 开启" style:0 handler:^(UIAlertAction *act) {
+        SetEnabled(!IsEnabled());
+        self.backgroundColor = IsEnabled() ? [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.85] : [UIColor grayColor];
+    }]];
+
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+
+    a.popoverPresentationController.sourceView = self;
+    a.popoverPresentationController.sourceRect = self.bounds;
+    [[self window].rootViewController presentViewController:a animated:YES completion:nil];
 }
 @end
