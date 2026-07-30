@@ -104,11 +104,13 @@ static void SetupProxyClass(Class proxyClass) {
 }
 
 - (void)_f_startUpdatingLocation {
-    id del = [self valueForKey:@"delegate"];
-    if ([del respondsToSelector:@selector(locationManager:didUpdateLocations:)])
-        [del locationManager:self didUpdateLocations:@[FakeLoc()]];
+    // 不阻断真实定位，让系统正常返回位置数据
+    // delegate proxy 和 coordinate hook 会负责篡改
+    [self _f_startUpdatingLocation];
 }
-- (void)_f_requestLocation { [self _f_startUpdatingLocation]; }
+- (void)_f_requestLocation {
+    [self _f_requestLocation];
+}
 - (CLLocation *)_f_location { return FakeLoc(); }
 @end
 
