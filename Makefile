@@ -4,8 +4,8 @@
 SDKROOT ?= $(shell xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
 ARCH    ?= arm64
 TARGET  ?= LocationHook.dylib
-SOURCES  = LocationHook.m ConfigManager.m FloatingMenu.m
-HEADERS  = ConfigManager.h
+SOURCES  = LocationHook.m ConfigManager.m FloatingMenu.m fishhook.c
+HEADERS  = ConfigManager.h fishhook.h
 
 CC = $(shell xcrun --find clang 2>/dev/null || echo "clang")
 
@@ -15,9 +15,9 @@ CFLAGS = -shared \
          -framework Foundation \
          -framework CoreLocation \
          -framework UIKit \
-         -framework UserNotifications \
          -fobjc-arc \
          -O2 \
+         -DNDEBUG \
          -dynamiclib \
          -miphoneos-version-min=14.0
 

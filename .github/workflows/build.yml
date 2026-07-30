@@ -31,19 +31,18 @@ jobs:
                 -framework Foundation \
                 -framework CoreLocation \
                 -framework UIKit \
-                -framework UserNotifications \
                 -fobjc-arc -O2 -dynamiclib \
+                -DNDEBUG \
                 -miphoneos-version-min=14.0 \
                 -o LocationHook.dylib \
-                LocationHook.m ConfigManager.m FloatingMenu.m
+                LocationHook.m ConfigManager.m FloatingMenu.m fishhook.c
 
       - name: ✅ 验证编译结果
         run: |
           echo "=== 文件信息 ==="
           file LocationHook.dylib
           echo ""
-          echo "=== 符号表 ==="
-          nm -gU LocationHook.dylib | head -20
+          echo "=== 架构信息 ==="
 
       - name: 📤 上传编译产物
         uses: actions/upload-artifact@v4

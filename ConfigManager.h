@@ -43,7 +43,7 @@
 /// 从剪贴板读取配置（格式：loc:39.9042,116.4074）
 - (BOOL)parseFromPasteboard;
 
-/// 保存配置到 UserDefaults
+/// 保存配置到加密文件
 - (void)save;
 
 /// 加载配置
