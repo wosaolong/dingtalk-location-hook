@@ -1,36 +1,18 @@
 //
-//  LocationHook.m — TrollFools 适配版
-//  精简定位注入，只用 method swizzling，不依赖 fishhook/constructor 时序
+//  LocationHook.m — TrollFools 适配版（单文件）
+//  精简定位注入，+load 入口，双重 hook 策略
 //
 
 #import <CoreLocation/CoreLocation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// ============================================================
-//  TrollFools 兼容：使用 +load 作为入口（constructor 可能不被触发）
-// ============================================================
-
-@interface _LH_Init : NSObject @end
-@implementation _LH_Init
-+ (void)load {
-    // 延迟到主线程就绪后初始化
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self performSelector:@selector(setup) withObject:nil afterDelay:1.0];
-    });
-}
-+ (void)setup {
-    // 初始化配置
-    [[_LH_Config shared] load];
-    // 安装 hook
-    InstallHooks();
-    // 启动 UI
-    ShowFloatingButton();
-}
-@end
+// 前向声明
+void InstallHooks(void);
+void ShowFloatingButton(void);
 
 // ============================================================
-//  配置（轻量，不用文件存储，防崩溃）
+//  配置
 // ============================================================
 
 @interface _LH_Config : NSObject
@@ -74,7 +56,7 @@
 @end
 
 // ============================================================
-//  定位参数 — 每次随机化
+//  定位参数随机化
 // ============================================================
 
 static CLLocation *MakeLocation() {
@@ -124,9 +106,7 @@ static CLLocation *MakeLocation() {
 - (void)locationManagerDidChangeAuthorization:(CLLocationManager *)m {
     if (_original && [_original respondsToSelector:_cmd]) [_original locationManagerDidChangeAuthorization:m];
 }
-- (BOOL)respondsToSelector:(SEL)s {
-    return [super respondsToSelector:s] || [_original respondsToSelector:s];
-}
+- (BOOL)respondsToSelector:(SEL)s { return [super respondsToSelector:s] || [_original respondsToSelector:s]; }
 - (id)forwardingTargetForSelector:(SEL)s { return _original; }
 @end
 
@@ -144,18 +124,12 @@ static void Swz(Class c, SEL o, SEL n) {
 }
 
 // ============================================================
-//  直接拦截 CLLocationManagerDelegate 的定位回调
-//  不依赖于 setDelegate: hook（因为钉钉可能在 init 时设置 delegate）
+//  Hook coordinate getter（最底层，直接改坐标值）
 // ============================================================
-
-// 方案 B：Hook CLLocation 的 coordinate getter
-// 当钉钉读取 location.coordinate 时，返回我们的坐标
 
 static CLLocationCoordinate2D (*orig_coordinate)(id, SEL) = NULL;
 static CLLocationCoordinate2D hook_coordinate(id self, SEL _cmd) {
-    if (![_LH_Config shared].enabled) {
-        return orig_coordinate(self, _cmd);
-    }
+    if (![_LH_Config shared].enabled) return orig_coordinate(self, _cmd);
     _LH_Config *c = [_LH_Config shared];
     double lat = c.lat + ((double)arc4random_uniform(500) / 1000000.0) - 0.00025;
     double lon = c.lon + ((double)arc4random_uniform(500) / 1000000.0) - 0.00025;
@@ -163,7 +137,6 @@ static CLLocationCoordinate2D hook_coordinate(id self, SEL _cmd) {
 }
 
 static void InstallCoordinateHook() {
-    // Hook CLLocation.coordinate getter
     Method m = class_getInstanceMethod([CLLocation class], @selector(coordinate));
     if (m) {
         orig_coordinate = (void*)method_getImplementation(m);
@@ -172,7 +145,7 @@ static void InstallCoordinateHook() {
 }
 
 // ============================================================
-//  setDelegate: hook（作为补充）
+//  CLLocationManager Category Hook
 // ============================================================
 
 @interface CLLocationManager (_LH)
@@ -191,20 +164,15 @@ static void InstallCoordinateHook() {
     }
     [self _lh_setDelegate:d];
 }
-- (void)_lh_startUpdatingLocation {
-    [self _lh_startUpdatingLocation];
-}
+- (void)_lh_startUpdatingLocation { [self _lh_startUpdatingLocation]; }
 @end
 
 // ============================================================
-//  Hook 安装
+//  安装所有 Hook
 // ============================================================
 
 void InstallHooks() {
-    // 方式 A：Hook coordinate（最可靠，直接改坐标值）
     InstallCoordinateHook();
-
-    // 方式 B：Hook setDelegate（补充）
     Swz([CLLocationManager class], @selector(setDelegate:), @selector(_lh_setDelegate:));
     Swz([CLLocationManager class], @selector(startUpdatingLocation), @selector(_lh_startUpdatingLocation));
 }
@@ -220,7 +188,6 @@ void InstallHooks() {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"📍"
         message:[NSString stringWithFormat:@"%.4f,%.4f\n%@", c.lat, c.lon, c.enabled?@"已启用":@"已暂停"]
         preferredStyle:UIAlertControllerStyleActionSheet];
-
     [a addAction:[UIAlertAction actionWithTitle:@"⏸ 暂停/启用" style:0 handler:^(UIAlertAction *a) {
         c.enabled = !c.enabled; [c save];
     }]];
@@ -228,7 +195,6 @@ void InstallHooks() {
         [self inputCoord];
     }]];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-
     a.popoverPresentationController.sourceView = self;
     a.popoverPresentationController.sourceRect = self.bounds;
     [[self window].rootViewController presentViewController:a animated:YES completion:nil];
@@ -236,9 +202,7 @@ void InstallHooks() {
 - (void)inputCoord {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"输入坐标"
         message:@"纬度,经度\n如：39.9042,116.4074" preferredStyle:UIAlertControllerStyleAlert];
-    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"39.9042,116.4074";
-    }];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) { tf.placeholder = @"39.9042,116.4074"; }];
     [a addAction:[UIAlertAction actionWithTitle:@"确认" style:0 handler:^(UIAlertAction *act) {
         NSString *t = a.textFields.firstObject.text;
         NSArray *p = [t componentsSeparatedByString:@","];
@@ -279,3 +243,21 @@ void ShowFloatingButton() {
     if (!w) w = UIApplication.sharedApplication.windows.firstObject;
     [w addSubview:btn];
 }
+
+// ============================================================
+//  +load 入口（放在最后，确保所有依赖已定义）
+// ============================================================
+
+@interface _LH_Init : NSObject @end
+@implementation _LH_Init
++ (void)load {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self performSelector:@selector(setup) withObject:nil afterDelay:1.0];
+    });
+}
++ (void)setup {
+    [[_LH_Config shared] load];
+    InstallHooks();
+    ShowFloatingButton();
+}
+@end
