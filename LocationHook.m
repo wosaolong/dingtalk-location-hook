@@ -97,6 +97,8 @@ static void SetupProxyClass(Class proxyClass) {
     if (d && ![d isKindOfClass:proxyClass]) {
         id proxy = [[proxyClass alloc] init];
         objc_setAssociatedObject(proxy, "origDel", d, OBJC_ASSOCIATION_ASSIGN);
+        // 强引用 proxy 到 manager，防止 delegate(weak) 释放后 proxy 被回收
+        objc_setAssociatedObject(self, "_px", proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self _f_setDelegate:proxy];
         return;
     }
