@@ -1,7 +1,7 @@
 //
-//  LocationHook.m — MSHookMessageEx 方案
-//  使用 CydiaSubstrate 的 MSHookMessageEx（如果可用）
-//  回退到 method_setImplementation
+//  LocationHook.m — TrollFools 最终稳定版
+//  解决核心问题：CoreLocation 可能晚于 dylib 加载，导致 hook 失败
+//  方案：轮询等待 CLLocation 类可用后再安装 hook
 //
 
 #import <CoreLocation/CoreLocation.h>
@@ -12,8 +12,9 @@
 #define TARGET_LAT 31.273598
 #define TARGET_LON 121.463739
 
-// ===== MSHookMessageEx（动态查找） =====
-static void (*s_MSHookMessageEx)(Class, SEL, IMP, IMP *) = NULL;
+// ===== 开关 =====
+static BOOL IsOn() { return [[NSUserDefaults standardUserDefaults] boolForKey:@"_on"]; }
+static void SetOn(BOOL v) { [[NSUserDefaults standardUserDefaults] setBool:v forKey:@"_on"]; [[NSUserDefaults standardUserDefaults] synchronize]; }
 
 // ===== 假位置 =====
 static CLLocation *FakeLoc() {
@@ -26,39 +27,45 @@ static CLLocation *FakeLoc() {
     return loc;
 }
 
-// 开关
-static BOOL IsOn() { return [[NSUserDefaults standardUserDefaults] boolForKey:@"_on"]; }
-static void SetOn(BOOL v) { [[NSUserDefaults standardUserDefaults] setBool:v forKey:@"_on"]; [[NSUserDefaults standardUserDefaults] synchronize]; }
-
-// ===== 原始 IMP 存储 =====
-static IMP orig_setDelegate = NULL;
-static IMP orig_startUpdate = NULL;
-static IMP orig_requestLoc = NULL;
-static IMP orig_location = NULL;
+// ===== 原 IMP 存储 =====
 static IMP orig_coordinate = NULL;
+static IMP orig_location = NULL;
+static IMP orig_setDelegate = NULL;
 
-// ===== 替换实现 =====
+// ===== coordinate hook =====
+static CLLocationCoordinate2D hook_coordinate(id self, SEL _cmd) {
+    if (!IsOn()) return ((CLLocationCoordinate2D(*)(id,SEL))orig_coordinate)(self, _cmd);
+    return CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON);
+}
+
+// ===== 模拟标记 hook（配合 SimLoc 或系统级模拟使用）=====
+static BOOL hook_flag_no(id self, SEL _cmd) { return NO; }
+
+// ===== CLLocationManager 方法 =====
+static id hook_location(id self, SEL _cmd) {
+    if (!IsOn()) return ((id(*)(id,SEL))orig_location)(self, _cmd);
+    return FakeLoc();
+}
+
+// ===== delegate 代理 =====
 static void hook_setDelegate(id self, SEL _cmd, id delegate) {
-    if (delegate && ![delegate isKindOfClass:NSClassFromString(@"_F_P")]) {
+    if (delegate && !objc_getAssociatedObject(delegate, "isProxy")) {
         static Class pc = nil;
         static dispatch_once_t once;
         dispatch_once(&once, ^{
-            pc = objc_allocateClassPair([NSObject class], "_F_P", 0);
-            // locationManager:didUpdateLocations:
+            pc = objc_allocateClassPair([NSObject class], "_FP", 0);
             class_addMethod(pc, @selector(locationManager:didUpdateLocations:),
                 imp_implementationWithBlock(^(id _s, CLLocationManager *m, NSArray *l) {
                     id od = objc_getAssociatedObject(_s, "od");
                     if (od && [od respondsToSelector:@selector(locationManager:didUpdateLocations:)])
                         [od locationManager:m didUpdateLocations:IsOn()?@[FakeLoc()]:l];
                 }), "v@:@@");
-            // locationManager:didDetermineState:forRegion:
             class_addMethod(pc, @selector(locationManager:didDetermineState:forRegion:),
                 imp_implementationWithBlock(^(id _s, CLLocationManager *m, NSInteger st, id r) {
                     id od = objc_getAssociatedObject(_s, "od");
                     if (od && [od respondsToSelector:@selector(locationManager:didDetermineState:forRegion:)])
                         [od locationManager:m didDetermineState:IsOn()?CLRegionStateInside:st forRegion:r];
                 }), "v@:@q@");
-            // forwardInvocation:
             class_addMethod(pc, @selector(forwardInvocation:),
                 imp_implementationWithBlock(^(id _s, NSInvocation *inv) {
                     id od = objc_getAssociatedObject(_s, "od");
@@ -68,9 +75,14 @@ static void hook_setDelegate(id self, SEL _cmd, id delegate) {
                 imp_implementationWithBlock(^NSMethodSignature*(id _s, SEL sel) {
                     return [objc_getAssociatedObject(_s, "od") methodSignatureForSelector:sel];
                 }), "@@::");
+            class_addMethod(pc, @selector(respondsToSelector:),
+                imp_implementationWithBlock(^BOOL(id _s, SEL sel) {
+                    return [objc_getAssociatedObject(_s, "od") respondsToSelector:sel];
+                }), "B@::");
             objc_registerClassPair(pc);
         });
         id proxy = [[pc alloc] init];
+        objc_setAssociatedObject(proxy, "isProxy", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(proxy, "od", delegate, OBJC_ASSOCIATION_ASSIGN);
         objc_setAssociatedObject(self, "_pr", proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ((void(*)(id,SEL,id))orig_setDelegate)(self, _cmd, proxy);
@@ -79,49 +91,75 @@ static void hook_setDelegate(id self, SEL _cmd, id delegate) {
     ((void(*)(id,SEL,id))orig_setDelegate)(self, _cmd, delegate);
 }
 
-static void hook_startUpdate(id self, SEL _cmd) {
-    // 不阻断
-    ((void(*)(id,SEL))orig_startUpdate)(self, _cmd);
-}
+// ============================================================
+//  Hook 安装（带 CoreLocation 就绪检测）
+// ============================================================
 
-static void hook_requestLoc(id self, SEL _cmd) {
-    ((void(*)(id,SEL))orig_requestLoc)(self, _cmd);
-}
+static BOOL s_hooksInstalled = NO;
 
-static id hook_location(id self, SEL _cmd) {
-    return IsOn() ? FakeLoc() : ((id(*)(id,SEL))orig_location)(self, _cmd);
-}
+static void InstallHooks() {
+    Class cl = [CLLocation class];
+    if (!cl) return;  // CoreLocation 未加载
 
-static CLLocationCoordinate2D hook_coordinate(id self, SEL _cmd) {
-    if (!IsOn()) return ((CLLocationCoordinate2D(*)(id,SEL))orig_coordinate)(self, _cmd);
-    return CLLocationCoordinate2DMake(TARGET_LAT, TARGET_LON);
-}
+    Class cm = [CLLocationManager class];
+    if (!cm) return;
 
-// ===== 安装 Hook =====
-static void DoHook(Class cls, SEL sel, IMP hook, IMP *orig) {
-    if (s_MSHookMessageEx) {
-        s_MSHookMessageEx(cls, sel, hook, orig);
-    } else {
-        Method m = class_getInstanceMethod(cls, sel);
-        if (m) { if (orig) *orig = method_getImplementation(m); method_setImplementation(m, hook); }
+    // coordinate
+    Method m1 = class_getInstanceMethod(cl, @selector(coordinate));
+    if (m1 && !orig_coordinate) {
+        orig_coordinate = method_getImplementation(m1);
+        method_setImplementation(m1, (IMP)hook_coordinate);
     }
+
+    // location
+    Method m2 = class_getInstanceMethod(cm, @selector(location));
+    if (m2 && !orig_location) {
+        orig_location = method_getImplementation(m2);
+        method_setImplementation(m2, (IMP)hook_location);
+    }
+
+    // setDelegate
+    Method m3 = class_getInstanceMethod(cm, @selector(setDelegate:));
+    if (m3 && !orig_setDelegate) {
+        orig_setDelegate = method_getImplementation(m3);
+        method_setImplementation(m3, (IMP)hook_setDelegate);
+    }
+
+    // 模拟标记 getter → 返回 NO（防止钉钉闪退）
+    NSArray *flags = @[@"isSimulatedBySoftware", @"isFromMockProvider",
+                       @"isProducedByAccessDevice", @"isLocationSimulated",
+                       @"isLikelyFromLocationdSimulation"];
+    for (NSString *n in flags) {
+        SEL sel = NSSelectorFromString(n);
+        Method fm = class_getInstanceMethod(cl, sel);
+        if (fm) method_setImplementation(fm, (IMP)hook_flag_no);
+    }
+
+    s_hooksInstalled = YES;
 }
 
-static void InstallAll() {
-    s_MSHookMessageEx = dlsym(RTLD_DEFAULT, "MSHookMessageEx");
-
-    DoHook([CLLocationManager class], @selector(setDelegate:), (IMP)hook_setDelegate, &orig_setDelegate);
-    DoHook([CLLocationManager class], @selector(startUpdatingLocation), (IMP)hook_startUpdate, &orig_startUpdate);
-    DoHook([CLLocationManager class], @selector(requestLocation), (IMP)hook_requestLoc, &orig_requestLoc);
-    DoHook([CLLocationManager class], @selector(location), (IMP)hook_location, &orig_location);
-    DoHook([CLLocation class], @selector(coordinate), (IMP)hook_coordinate, &orig_coordinate);
+// 轮询等待 CoreLocation 就绪（最多 15 秒）
+static void EnsureHooks() {
+    if (s_hooksInstalled) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        for (int i = 0; i < 30; i++) {
+            if ([CLLocation class] && [CLLocationManager class]) {
+                InstallHooks();
+                break;
+            }
+            usleep(500000);  // 0.5s
+        }
+        // 最后一搏
+        if (!s_hooksInstalled) InstallHooks();
+    });
 }
 
-// ===== +load 入口 =====
-@interface _F_L : NSObject @end
-@implementation _F_L
-+ (void)load {
-    InstallAll();
+// ============================================================
+//  入口
+// ============================================================
+
+__attribute__((constructor)) static void Init() {
+    EnsureHooks();
 
     dispatch_async(dispatch_get_main_queue(), ^{
         UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -136,7 +174,6 @@ static void InstallAll() {
         [[UIApplication sharedApplication].windows.firstObject addSubview:b];
     });
 }
-@end
 
 // ===== UI 菜单 =====
 @interface UIButton (_F) @end
