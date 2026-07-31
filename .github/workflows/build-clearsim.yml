@@ -1,0 +1,37 @@
+# GitHub Actions — 编译 ClearSimFlag.dylib（清除模拟标记）
+name: Build ClearSimFlag.dylib
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 📦 编译 ClearSimFlag.dylib
+        run: |
+          clang -shared \
+                -arch arm64 \
+                -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+                -framework Foundation \
+                -framework CoreLocation \
+                -fobjc-arc -O2 -dynamiclib \
+                -DNDEBUG \
+                -miphoneos-version-min=14.0 \
+                -o ClearSimFlag.dylib \
+                ClearSimFlag.m
+
+      - name: ✅ 验证
+        run: file ClearSimFlag.dylib
+
+      - name: 📤 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClearSimFlag.dylib
+          path: ClearSimFlag.dylib
+          if-no-files-found: error
